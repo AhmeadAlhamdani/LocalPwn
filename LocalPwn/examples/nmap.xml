@@ -1,0 +1,1 @@
+<?xml version="1.0"?><nmaprun><host><address addr="192.168.56.10" addrtype="ipv4"/><ports><port protocol="tcp" portid="80"><state state="open"/><service name="http" product="Demonstration Server"/></port><port protocol="tcp" portid="22"><state state="open"/><service name="ssh"/></port></ports></host></nmaprun>

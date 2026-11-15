@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "localpwn-assessor"
+version = "0.1.0"
+description = "Local-first authorized security assessment with scoped Nmap, audit evidence, and optional AI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+dependencies = []
+[project.optional-dependencies]
+web = ["fastapi>=0.110", "uvicorn>=0.27"]
+test = ["pytest>=7.4"]
+[project.scripts]
+localpwn = "localpwn.cli:main"
+[tool.setuptools.packages.find]
+where = ["src"]
