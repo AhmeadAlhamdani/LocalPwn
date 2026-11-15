@@ -1,9 +1,9 @@
-"""Local-only interactive assessment dashboard with bounded execution.
+"""Single-user, localhost-only assessment console and job controls.
 
-This service is intended for a single trusted user on loopback. Do not reverse
-proxy it or expose port 8000 to another machine; it has no user authentication.
+This is not an authenticated multi-user service. Never expose it off-host.
 """
 import json
+from contextlib import asynccontextmanager
 import secrets
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -29,7 +29,13 @@ def make_app(root):
     current = set()
     lock = threading.Lock()
     csrf_token = secrets.token_urlsafe(32)
-    app = FastAPI(title="LocalPwn", docs_url=None, redoc_url=None, openapi_url=None)
+    @asynccontextmanager
+    async def lifespan(application):
+        yield
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    app = FastAPI(title="LocalPwn", docs_url=None, redoc_url=None, openapi_url=None,
+                  lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]"])
 
     class AssessmentRequest(BaseModel):
@@ -41,6 +47,10 @@ def make_app(root):
         max_hosts: int = Field(default=16, ge=1, le=32)
         acknowledged: bool = False
         demo: bool = False
+        lab_kind: str = "fixture"
+        lab_persistence: bool = False
+        worker: str = "native"
+        safe_checks: bool = False
 
     def check_token(token):
         if not token or not secrets.compare_digest(token, csrf_token):
@@ -64,7 +74,7 @@ def make_app(root):
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "version": "0.2.0", "mode": "loopback", "sandbox": "not implemented", "live_exploitation": False}
+        return {"status": "ok", "version": "1.0.0-rc1", "mode": "loopback", "sandbox": "optional Docker Nmap worker", "live_exploitation": False, "resume": True, "cancel": True}
 
     @app.get("/api/assessments")
     def assessments():
@@ -82,12 +92,12 @@ def make_app(root):
         finally:
             s.db.close()
 
-    def run_assessment(aid, target, policy, provider, model, api_key, offline_xml=None, lab=False):
+    def run_assessment(aid, target, policy, provider, model, api_key, offline_xml=None, lab=False, worker="native", safe_checks=False, resume=False, lab_kind="fixture", lab_persistence=False):
         s = connection()
         try:
             Engine(s, policy).execute(target, provider=provider, model=model,
                                       lab_exercise=lab, aid=aid, offline_xml=offline_xml,
-                                      api_key=api_key)
+                                      api_key=api_key, worker=worker, safe_checks=safe_checks, resume=resume, lab_kind=lab_kind, lab_persistence=lab_persistence)
         except Exception:
             # Engine logs only a bounded error to the local assessment database.
             pass
@@ -103,14 +113,24 @@ def make_app(root):
             raise HTTPException(422, "Confirm authorization and scope before starting")
         if payload.provider not in {"none", "ollama", "openai", "anthropic"}:
             raise HTTPException(422, "Unsupported provider")
+        if payload.worker not in {"native", "docker"}:
+            raise HTTPException(422, "Unsupported execution worker")
+        if payload.lab_kind not in {"fixture", "container"}:
+            raise HTTPException(422, "Unknown lab profile")
+        if payload.lab_persistence and not (payload.demo and payload.lab_kind == "container"):
+            raise HTTPException(422, "Marker simulation requires the container lab profile")
+        if payload.demo and payload.worker != "native":
+            raise HTTPException(422, "Offline demo runs only in native fixture mode; it has no network traffic")
         if payload.api_key and payload.provider not in {"openai", "anthropic"}:
             raise HTTPException(422, "API key only valid for a supported cloud provider")
         try:
             policy = Policy((payload.allow.strip(),), max_hosts=payload.max_hosts,
                             lab=payload.demo)
             target = policy.validate_target(payload.target.strip())
-            if payload.demo and (target != "192.168.56.10/32" or payload.allow.strip() != "192.168.56.10/32"):
-                raise ValueError("Offline demonstration requires the bundled synthetic target 192.168.56.10/32")
+            if payload.demo and payload.lab_kind == "fixture" and (target != "192.168.56.10/32" or payload.allow.strip() != "192.168.56.10/32"):
+                raise ValueError("Offline demo requires 192.168.56.10/32")
+            if payload.demo and payload.lab_kind == "container" and (target != "127.0.0.1/32" or payload.allow.strip() != "127.0.0.1/32"):
+                raise ValueError("Container lab requires loopback target 127.0.0.1/32")
         except ValueError as exc:
             raise HTTPException(422, str(exc))
         with lock:
@@ -119,19 +139,98 @@ def make_app(root):
             s = connection()
             try:
                 aid = s.create(target)
+                s.set_control(aid, (payload.allow.strip(),), payload.provider, payload.model, payload.worker, payload.demo, payload.lab_kind, payload.lab_persistence)
             finally:
                 s.db.close()
             current.add(aid)
         try:
             xml = (files("localpwn").joinpath("static/demo-nmap.xml").read_text(encoding="utf-8")
-                   if payload.demo else None)
+                   if payload.demo and payload.lab_kind == 'fixture' else (files('localpwn').joinpath('static/demo-lab-nmap.xml').read_text(encoding='utf-8') if payload.demo and payload.lab_kind == 'container' else None))
             executor.submit(run_assessment, aid, target, policy, payload.provider,
-                            payload.model, payload.api_key or None, xml, payload.demo)
+                            payload.model, payload.api_key or None, xml, payload.demo,
+                            payload.worker, payload.safe_checks, False, payload.lab_kind, payload.lab_persistence)
         except Exception:
             with lock:
                 current.discard(aid)
             raise HTTPException(500, "Failed to schedule assessment")
         return {"id": aid, "status": "queued"}
+
+    @app.post("/api/assessments/{aid}/cancel")
+    def cancel(aid: str, x_localpwn_session: str | None = Header(default=None)):
+        check_token(x_localpwn_session)
+        if not (len(aid) == 12 and aid.isalnum()):
+            raise HTTPException(404)
+        s = connection()
+        try:
+            status = s.snapshot(aid)['assessment']['status']
+            if status not in {'running', 'pending'}:
+                raise HTTPException(409, 'Assessment is not currently running')
+            if not s.request_cancel(aid):
+                raise HTTPException(409, 'No cancellable job control exists')
+            s.action(aid, 'lifecycle', 'cancel_requested', 'accepted', {'source': 'dashboard'})
+        except ValueError:
+            raise HTTPException(404)
+        finally:
+            s.close()
+        return {'id': aid, 'status': 'cancelling'}
+
+    class ResumeRequest(BaseModel):
+        api_key: str | None = Field(default=None, max_length=500)
+        safe_checks: bool = False
+        acknowledged: bool = False
+
+    @app.post("/api/assessments/{aid}/resume", status_code=202)
+    def resume_assessment(aid: str, payload: ResumeRequest,
+                          x_localpwn_session: str | None = Header(default=None)):
+        check_token(x_localpwn_session)
+        if not payload.acknowledged:
+            raise HTTPException(422, 'Authorization acknowledgment required')
+        if not (len(aid) == 12 and aid.isalnum()):
+            raise HTTPException(404)
+        with lock:
+            if current:
+                raise HTTPException(409, 'An assessment is already running')
+            s = connection()
+            try:
+                assessment = s.snapshot(aid)['assessment']
+                control = s.control(aid)
+                if not control:
+                    raise HTTPException(409, 'Legacy assessments cannot be resumed')
+                if assessment['status'] == 'complete':
+                    raise HTTPException(409, 'Assessment already completed')
+                policy = Policy(tuple(json.loads(control['scope'])), lab=bool(control['demo']), max_hosts=32)
+                policy.validate_target(assessment['target'])
+                provider, model, worker = control['provider'], control['model'], control['worker']
+                target, demo = assessment['target'], bool(control['demo'])
+                lab_kind = control.get('lab_kind', 'fixture')
+                lab_persistence = bool(control.get('lab_persistence', 0))
+            except ValueError:
+                raise HTTPException(404)
+            finally:
+                s.close()
+            current.add(aid)
+        try:
+            xml = (files('localpwn').joinpath('static/' + ('demo-lab-nmap.xml' if lab_kind == 'container' else 'demo-nmap.xml')).read_text(encoding='utf-8') if demo else None)
+            executor.submit(run_assessment, aid, target, policy, provider, model,
+                            payload.api_key, xml, demo, worker, payload.safe_checks, True, lab_kind, lab_persistence)
+        except Exception:
+            with lock:
+                current.discard(aid)
+            raise HTTPException(500, 'Resume could not be scheduled')
+        return {'id': aid, 'status': 'resuming'}
+
+    @app.get("/api/assessments/{aid}/integrity")
+    def integrity(aid: str):
+        if not (len(aid) == 12 and aid.isalnum()):
+            raise HTTPException(404)
+        s = connection()
+        try:
+            s.snapshot(aid)
+            return {'actions': s.verify_actions(aid), 'artifacts': s.verify_artifacts(aid)}
+        except ValueError:
+            raise HTTPException(404)
+        finally:
+            s.close()
 
     @app.get("/api/assessments/{aid}/export/{fmt}")
     def export(aid: str, fmt: str):
@@ -199,9 +298,5 @@ def make_app(root):
         return Response(content, media_type="application/octet-stream", headers={
             "Content-Disposition": f'attachment; filename="{path.name}"',
             "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
-
-    @app.on_event("shutdown")
-    def shutdown():
-        executor.shutdown(wait=False, cancel_futures=True)
 
     return app
