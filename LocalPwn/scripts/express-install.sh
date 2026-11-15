@@ -11,6 +11,6 @@ read -r -p 'Create/update a project-local Python virtual environment? [y/N] ' re
 [[ "$response" =~ ^[Yy]$ ]] || exit 0
 python3 -m venv "$ROOT/.venv"
 "$ROOT/.venv/bin/python" -m pip install --upgrade pip
-"$ROOT/.venv/bin/python" -m pip install -e "$ROOT[web]"
+"$ROOT/.venv/bin/python" -m pip install -e "$ROOT[full]"
 printf '\nReady. Run: %s/.venv/bin/localpwn doctor\n' "$ROOT"
 printf 'Dashboard: %s/.venv/bin/localpwn web\n' "$ROOT"

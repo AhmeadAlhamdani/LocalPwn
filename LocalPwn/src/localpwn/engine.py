@@ -10,7 +10,7 @@ class Engine:
         self.store=store
         self.policy=policy
 
-    def execute(self, target, provider="none", model=None, lab_exercise=False, aid=None, offline_xml=None):
+    def execute(self, target, provider="none", model=None, lab_exercise=False, aid=None, offline_xml=None, api_key=None):
         normalized=self.policy.validate_target(target)
         if lab_exercise and not self.policy.lab: raise ValueError("Lab exercises need --lab")
         aid=aid or self.store.create(normalized)
@@ -38,7 +38,7 @@ class Engine:
                     if port["port"] in {21,23}:
                         self.store.finding(aid,f"Review exposed service {port['service']} on {host['address']}:{port['port']}","Informational", "Service observed in Nmap inventory; no vulnerability confirmed", "Assess business need and restrict network exposure")
             try:
-                result=analyze(hosts,provider,model)
+                result=analyze(hosts,provider,model,api_key=api_key)
                 self.store.action(aid,"analysis","ai_advisory","success",{"provider":provider,"summary":result["summary"],"hypotheses":result["hypotheses"]})
                 self.store.artifact(aid,"ai_advisory.json",json.dumps(result,indent=2).encode())
             except Exception as exc:

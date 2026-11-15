@@ -91,3 +91,32 @@ Data defaults to `.localpwn/`: SQLite database and per-assessment directory cont
 ## License
 
 Apache-2.0. Bundled third-party tools are not redistributed by this repository. Respect their licenses and the rules of each authorized training platform.
+
+---
+
+## Interactive localhost dashboard (v0.2)
+
+The v0.2 dashboard replaces the former read-only page with a functional assessment console. From a browser you can:
+
+- Enter a **literal IPv4/IPv6 IP or CIDR** and an explicit authorized scope; acknowledge authorization.
+- Select deterministic/no-AI, local Ollama, OpenAI API, or Anthropic API. Cloud keys can be entered **for a single run** and are not stored in the local database or browser storage. Existing environment variables are also supported.
+- Launch background Nmap discovery or an **offline demo**; see phase and completion status refresh periodically.
+- Navigate **Overview**, **New assessment**, **Assessments**, **Findings & evidence** (findings, assets JSON, audit actions, artifacts, AI advisory), **Reports**, and **Settings**.
+- Download **HTML**, **JSON**, and **PDF** reports (PDF needs ReportLab), and individual evidence files.
+
+### Install / upgrade on Kali
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv nmap
+cd ~/LocalPwn
+# After obtaining and extracting the new release (or pulling an uploaded GitHub update):
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[full]'
+.venv/bin/localpwn doctor
+.venv/bin/localpwn web
+```
+
+Open **http://127.0.0.1:8000** in the Kali VM. Use **New assessment → Use offline demo preset**, check the authorization box, click **Start assessment**, and view the completed result under **Findings & evidence**. You can also run CLI assessments and inspect their records through the same dashboard if both use the same working directory / `.localpwn` root.
+
+**Security boundaries:** The dashboard is intentionally **single-user, loopback-only**, has no remote user authentication, and must not be exposed via public interfaces, reverse proxies, shared ports, or port-forwarding. The application runs assessments with the OS account's existing permissions. Nmap scans are conservative and bounded; tools are **not yet executed inside Docker/microVM worker sandboxes**. This version does not provide arbitrary AI-driven exploitation, real post-exploitation or persistence, job cancellation, nor true cross-process assessment resume. Its lab demonstration creates and removes a marker inside a temporary local folder; it never accesses a remote host. Do not interpret it as a successful exploit.

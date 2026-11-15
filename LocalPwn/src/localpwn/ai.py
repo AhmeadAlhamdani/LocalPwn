@@ -15,7 +15,7 @@ def _post(url, payload, headers=None):
     with urllib.request.urlopen(request, timeout=90) as resp:
         return json.loads(resp.read(2_000_000))
 
-def analyze(observations, provider="none", model=None):
+def analyze(observations, provider="none", model=None, api_key=None):
     if provider == "none":
         return {"summary":"AI disabled: manual review required", "hypotheses":[],"recommendations":[]}
     content=json.dumps(observations,sort_keys=True)[:18000]
@@ -24,12 +24,12 @@ def analyze(observations, provider="none", model=None):
         response=_post(url,{"model":model or "gpt-oss:20b", "stream":False,"format":"json", "messages":[{"role":"system","content":SYSTEM},{"role":"user","content":content}]})
         answer=response["message"]["content"]
     elif provider == "openai":
-        key=os.environ.get("OPENAI_API_KEY")
+        key=api_key or os.environ.get("OPENAI_API_KEY")
         if not key: raise ValueError("OPENAI_API_KEY not set")
         response=_post("https://api.openai.com/v1/chat/completions",{"model":model or "gpt-4.1-mini","messages":[{"role":"system","content":SYSTEM},{"role":"user","content":content}],"response_format":{"type":"json_object"}}, {"Authorization":"Bearer "+key})
         answer=response["choices"][0]["message"]["content"]
     elif provider == "anthropic":
-        key=os.environ.get("ANTHROPIC_API_KEY")
+        key=api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not key: raise ValueError("ANTHROPIC_API_KEY not set")
         response=_post("https://api.anthropic.com/v1/messages",{"model":model or "claude-sonnet-4-5","max_tokens":1200,"system":SYSTEM,"messages":[{"role":"user","content":content}]}, {"x-api-key":key,"anthropic-version":"2023-06-01"})
         answer="".join(part.get("text","") for part in response.get("content",[]) if part.get("type")=="text")
