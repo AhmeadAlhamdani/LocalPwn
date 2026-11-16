@@ -1,0 +1,19 @@
+services:
+  localpwn-lab:
+    build: .
+    image: localpwn-synthetic-lab:1.0
+    ports:
+      - "127.0.0.1:18181:8080"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    user: "65534:65534"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=8m
+    pids_limit: 32
+    mem_limit: 128m
+    networks: [isolated-lab]
+networks:
+  isolated-lab:
+    internal: true
